@@ -1,0 +1,52 @@
+# Model arguments
+model_name_or_path: /root/autodl-tmp/apr-rl/Qwen2.5-Coder-1.5B-Instruct
+model_revision: main
+torch_dtype: bfloat16
+attn_implementation: flash_attention_2
+#attn_implementation: sdpa
+# Data training arguments
+train_dataset: /root/autodl-tmp/apr-rl/data/apr_train_fold_1.jsonl
+eval_dataset: /root/autodl-tmp/apr-rl/data/apr_test_fold_1.jsonl
+#dataset_configs:
+#- all
+# Num processes is less by 1 as vLLM is using 1 GPU
+#num_processes: 1
+
+# GRPO trainer config
+bf16: true
+use_vllm: true
+vllm_device: auto
+vllm_gpu_memory_utilization: 0.7
+vllm_max_model_len: 2048
+do_eval: true
+eval_strategy: steps
+eval_steps: 500
+gradient_accumulation_steps: 8
+gradient_checkpointing: true
+gradient_checkpointing_kwargs:
+  use_reentrant: false
+hub_model_id: Qwen2.5-1.5B-Instruct-APR-RL
+hub_strategy: every_save
+learning_rate: 2.0e-05
+log_level: info
+logging_steps: 1
+logging_strategy: steps
+lr_scheduler_type: cosine
+num_generations: 8
+max_prompt_length: 4096
+max_completion_length: 2048
+max_steps: -1
+num_train_epochs: 1
+output_dir: /root/autodl-tmp/apr-rl/Qwen2.5-1.5B-Instruct-APR-RL
+overwrite_output_dir: true
+per_device_eval_batch_size: 8
+per_device_train_batch_size: 1
+push_to_hub: False
+report_to:
+- tensorboard
+save_strategy: 'steps'
+save_steps: 250
+save_total_limit: 4
+seed: 42
+temperature: 1.0
+warmup_ratio: 0.1
