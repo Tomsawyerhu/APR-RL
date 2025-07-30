@@ -1,9 +1,7 @@
 import gzip
 import json
 import logging
-import os
-import random
-import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Iterable, Dict
 import os
@@ -15,6 +13,7 @@ test_dir = './tests'
 if not os.path.exists(test_dir):
     os.mkdir(test_dir)
 logger = logging.getLogger(__name__)
+
 
 def stream_jsonl(filename: str) -> Iterable[Dict]:
     """
@@ -79,7 +78,7 @@ def split_problem_tests(problem: CodeRepairProblem):
             else:
                 split_tests.append(pre_base_str + base_str + i)
         return split_tests
-    elif problem.dataset == DatasetType.CODE_FORCES.value:
+    elif problem.dataset in [DatasetType.CODE_FORCES.value, DatasetType.CODE_CONTESTS.value]:
         split_tests = []
         for test_input, test_output in zip(problem.test_inputs, problem.test_outputs):
             split_tests.append({
@@ -92,8 +91,7 @@ def split_problem_tests(problem: CodeRepairProblem):
 
 
 def get_unique_id():
-    unique_id = f"{int(time.time() * 1000)}_{random.randint(10000000, 99999999)}"
-    return unique_id
+    return str(uuid.uuid4().hex)  # 生成 32 位十六进制字符串
 
 
 def run_single_test(code, test_input, test_output, timeout=3):
@@ -114,7 +112,7 @@ def run_single_test(code, test_input, test_output, timeout=3):
 
         try:
             stdout, stderr = proc.communicate(input=test_input, timeout=timeout)
-            logger.info("stdout is %s, expect output is %s",stdout.strip(),test_output.strip())
+            logger.info("stdout is %s, expect output is %s", stdout.strip(), test_output.strip())
             return_code = proc.returncode
 
             if stderr:
@@ -173,7 +171,7 @@ def run_base_tests(problem: CodeRepairProblem, completion, timeout=1):
                 results.append(result["passed"])
         return {
             "task_id": problem.id,
-            "pass_rate": sum(results) / len(results),
+            "pass_rate": (sum(results) / len(results)) if len(results) > 0 else 0,
         }
     elif problem.dataset == DatasetType.MBPP.value:
         result = check_correctness(problem, completion, timeout)
@@ -181,8 +179,9 @@ def run_base_tests(problem: CodeRepairProblem, completion, timeout=1):
             "task_id": problem.id,
             "passed": result['passed']
         }
-    elif problem.dataset == DatasetType.CODE_FORCES.value:
+    elif problem.dataset in [DatasetType.CODE_FORCES.value, DatasetType.CODE_CONTESTS.value]:
         split_tests = split_problem_tests(problem)
+
         results = []
         with ThreadPoolExecutor(max_workers=16) as executor:
             futures = [
@@ -198,7 +197,7 @@ def run_base_tests(problem: CodeRepairProblem, completion, timeout=1):
                     results.append(0)
         return {
             "task_id": problem.id,
-            "pass_rate": sum(results) / len(results)
+            "pass_rate": (sum(results) / len(results)) if len(results) > 0 else 0
         }
 
     else:
@@ -212,10 +211,11 @@ def run_extra_tests(problem: CodeRepairProblem, completion, extra_tests: list, t
         results = []
         with ThreadPoolExecutor() as executor:
             for result in executor.map(
-                    lambda extra_test: check_correctness(problem, completion, timeout, extra_assertion=extra_test,check_on_gt=check_on_gt),
+                    lambda extra_test: check_correctness(problem, completion, timeout, extra_assertion=extra_test,
+                                                         check_on_gt=check_on_gt),
                     extra_tests
             ):
-                if isinstance(result,dict) and result.get('passed') is True:
+                if isinstance(result, dict) and result.get('passed') is True:
                     results.append(1)
                 else:
                     results.append(0)
@@ -223,14 +223,19 @@ def run_extra_tests(problem: CodeRepairProblem, completion, extra_tests: list, t
             "task_id": problem.id,
             "pass_rate": sum(results) / len(results)
         }
-    elif problem.dataset == DatasetType.CODE_FORCES.value:
+    elif problem.dataset in [DatasetType.CODE_FORCES.value, DatasetType.CODE_CONTESTS.value]:
         assert isinstance(extra_tests, list)
         results = []
         for extra_test in extra_tests:
+            if not isinstance(extra_test,
+                              dict) or 'test_input' not in extra_test.keys() or 'test_output' not in extra_test.keys() \
+                    or not isinstance(extra_test['test_input'], str) or not isinstance(extra_test['test_output'], str):
+                results.append(0)
+                continue
             test_input = extra_test['test_input']
             test_output = extra_test['test_output']
             exec_result = run_single_test(completion, test_input, test_output, timeout)
-            if exec_result['passed']:
+            if isinstance(exec_result, dict) and exec_result.get('passed') is True:
                 results.append(1)
             else:
                 results.append(0)

@@ -1,12 +1,15 @@
 # 1. pip install -U huggingface_hub
 # 2. export HF_ENDPOINT=https://hf-mirror.com
-# 3. 下载数据集 huggingface-cli download --token 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 --repo-type dataset --resume-download BAAI/TACO --local-dir /mnt/data/hhc/TACO
-# 4. 下载模型 huggingface-cli download --token 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 --resume-download Qwen/Qwen2.5-Coder-0.5B --local-dir /mnt/data/hhc/Qwen2.5-Coder-0.5B
+# 3. 下载数据集 huggingface-cli download --token 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 --repo-type dataset --resume-download openai/gsm8k --local-dir gsm8k
+# 4. 下载模型 huggingface-cli download --token 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 --resume-download Qwen/Qwen3-4B --local-dir Qwen3-4B
 # 5. ACCELERATE_LOG_LEVEL=info CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file zero3.yaml  grpo.py --config config_full.yaml (单卡，多卡指定--num_processes)
 # 5. ACCELERATE_LOG_LEVEL=info CUDA_VISIBLE_DEVICES=1 accelerate launch grpo.py --config config_full.yaml (单卡，多卡指定--num_processes)
-# 启动vllm在第一块显卡: CUDA_VISIBLE_DEVICES=0 trl vllm-serve --model /root/autodl-tmp/apr-rl/Qwen2.5-Coder-1.5B-Instruct --enforce-eager false
+# 启动vllm在第一块显卡: CUDA_VISIBLE_DEVICES=0 trl vllm-serve --model /root/autodl-tmp/apr-rl/Qwen2.5-Coder-3B-Instruct --enforce-eager true
+# CUDA_VISIBLE_DEVICES=0 trl vllm-serve --model /root/autodl-tmp/apr-rl/Qwen3-4B --enforce-eager false --host 0.0.0.0 --port 8000
 # trl==0.18.2 vllm==0.9.2 torch==2.7.0
+# export VLLM_ALLOW_INSECURE_SERIALIZATION=1
 import logging
+import os.path
 import re
 import sys
 import time
@@ -26,10 +29,13 @@ from trl import GRPOTrainer, ModelConfig, ScriptArguments, TrlParser, get_peft_c
 from execution import *
 
 logger = logging.getLogger(__name__)
-# wandb.login(key='41ea25623b55153057249e2dc3a7877d15e24025')
-# os.environ["WANDB_PROJECT"] = "apr-rl"
-base_url = "https://api5.xhub.chat/v1"
-api_key = "sk-t04CcTB1pT1QiOeZk6iyXTNipV34jWxWGU7oVik2pmKXDHgR"
+logger_file = './data/logfile.txt'
+if os.path.exists(logger_file):
+    os.remove(logger_file)
+
+base_url = ""
+api_key = ""
+os.environ['VLLM_ALLOW_INSECURE_SERIALIZATION'] = '1'
 
 
 def get_tokenizer(model_args: ModelConfig):
@@ -99,12 +105,6 @@ class GRPOScriptArguments(ScriptArguments):
     """
 
     reward_funcs: list[str] = field(
-        # default_factory=lambda: ["format", "testcase_syntax_reward", "fixed_code_pass_all_test_reward",
-        #                          "testcase_pass_groundtruth_and_kill_bug_reward"],
-        # metadata={
-        #     "help": "List of reward functions. Possible values: 'format', 'testcase_syntax_reward', "
-        #             "'fixed_code_pass_all_test_reward', 'testcase_pass_groundtruth_and_kill_bug_reward'"
-        # }
         default_factory=lambda: ["format", "fixed_code_pass_all_test_reward",
                                  "testcase_pass_groundtruth_and_kill_bug_reward"],
         metadata={
@@ -119,6 +119,14 @@ class GRPOScriptArguments(ScriptArguments):
 
     eval_dataset: Optional[str] = field(
         default="", metadata={"help": "Eval dataset"}
+    )
+
+    evaluate_only: bool = field(
+        default=True, metadata={"help": "Do evaluation only"}
+    )
+
+    reasoning_model_enable_cot: bool = field(
+        default=False, metadata={"help": "Enable think during train/eval, only effective for reasoning models"}
     )
 
 
@@ -177,31 +185,6 @@ def is_valid_test_input_output(testcase):
     return True
 
 
-# def testcase_syntax_reward(completions, **kwargs):
-#     contents = [completion[0]["content"] for completion in completions]
-#     dataset_types = kwargs['dataset']
-#     rewards = []
-#     for i, content in enumerate(contents):
-#         if not check_format(content, dataset_types[i]):
-#             rewards.append(0)
-#             continue
-#
-#         assertions = extract_testcases(content)
-#         if assertions is None or not isinstance(assertions, list):
-#             rewards.append(0)
-#             continue
-#
-#         valid_assertion_count = 0
-#         for assertion in assertions:
-#             if is_valid_assertion(assertion):
-#                 valid_assertion_count += 1
-#
-#         rewards.append(valid_assertion_count / len(assertions))
-#
-#     logger.info("testcase_syntax_reward is %s", rewards)
-#     return rewards
-
-
 def evaluate_generated_testcase(testcase, problem, is_ground_truth, dataset_type, idx):
     """
     判断单个 testcase 是否 pass ground truth 或 kill bug.
@@ -213,10 +196,10 @@ def evaluate_generated_testcase(testcase, problem, is_ground_truth, dataset_type
         return idx, 0
 
     if is_ground_truth:
-        exec_result = run_extra_tests(problem, problem.ground_truth, [testcase],check_on_gt=True)
+        exec_result = run_extra_tests(problem, problem.ground_truth, [testcase], check_on_gt=True)
         result = 1 if (isinstance(exec_result, dict) and exec_result.get('pass_rate', None) == 1) else 0
     else:
-        exec_result = run_extra_tests(problem, problem.buggy_code, [testcase],check_on_gt=False)
+        exec_result = run_extra_tests(problem, problem.buggy_code, [testcase], check_on_gt=False)
         result = 1 if (isinstance(exec_result, dict) and exec_result.get('pass_rate', None) == 0) else 0
     return idx, result
 
@@ -291,95 +274,9 @@ def testcase_pass_groundtruth_and_kill_bug_reward(completions, **kwargs):
     end_time = time.time()
     logger.info("testcase_pass_groundtruth_and_kill_bug_reward cost %s seconds", end_time - start_time)
     logger.info("testcase_pass_groundtruth_and_kill_bug_reward is %s", rewards)
+    with open(logger_file, 'a') as f:
+        f.write(f'dataset = {dataset_types[0]}, testcase_pass_groundtruth_and_kill_bug_reward is {str(rewards)}\n')
     return rewards
-
-
-#
-# def testcase_pass_groundtruth_and_kill_bug_reward(completions, **kwargs):
-#     start_time = time.time()
-#     contents = [completion[0]["content"] for completion in completions]
-#     dataset_types = kwargs['dataset']
-#     rewards = []
-#     for i, content in enumerate(contents):
-#         problem = CodeRepairProblem(
-#             dataset=kwargs["dataset"][i], id=kwargs["id"][i],
-#             question=kwargs["question"][i],
-#             test_code=kwargs["test_code"][i],
-#             test_inputs=kwargs["test_inputs"][i], test_outputs=kwargs["test_outputs"][i],
-#             entry_point=kwargs["entry_point"][i], ground_truth=kwargs["ground_truth"][i],
-#             buggy_code=kwargs["buggy_code"][i]
-#         )
-#
-#         if not check_format(content, dataset_types[i]):
-#             rewards.append(0)
-#             continue
-#
-#         testcases = extract_testcases(content)
-#         logger.info("testcases are:\n%s", str(testcases))
-#         if testcases is None or not isinstance(testcases, list):
-#             rewards.append(0)
-#             continue
-#
-#         pass_ground_truth, kill_bug = [], []
-#
-#         # pass groundtruth
-#         for testcase in testcases:
-#             if dataset_types[i] == DatasetType.HUMAN_EVAL.value or dataset_types[i] == DatasetType.MBPP.value:
-#                 if not is_valid_assertion(testcase):
-#                     pass_ground_truth.append(0)
-#                     continue
-#             elif dataset_types[i] == DatasetType.CODE_FORCES.value:
-#                 if not is_valid_test_input_output(testcase):
-#                     pass_ground_truth.append(0)
-#                     continue
-#             else:
-#                 raise Exception(f'unsupported dataset type {dataset_types[i]}')
-#
-#             exec_result = run_extra_tests(problem, problem.ground_truth, [testcase])
-#             if dataset_types[i] == DatasetType.HUMAN_EVAL.value or dataset_types[i] == DatasetType.CODE_FORCES.value:
-#                 if exec_result['pass_rate'] == 1:
-#                     pass_ground_truth.append(1)
-#                 else:
-#                     pass_ground_truth.append(0)
-#             elif dataset_types[i] == DatasetType.MBPP.value:
-#                 if exec_result['passed']:
-#                     pass_ground_truth.append(1)
-#                 else:
-#                     pass_ground_truth.append(0)
-#
-#         # kill bug
-#         for testcase in testcases:
-#             if dataset_types[i] == DatasetType.HUMAN_EVAL.value or dataset_types[i] == DatasetType.MBPP.value:
-#                 if not is_valid_assertion(testcase):
-#                     kill_bug.append(0)
-#                     continue
-#             elif dataset_types[i] == DatasetType.CODE_FORCES.value:
-#                 if not is_valid_test_input_output(testcase):
-#                     kill_bug.append(0)
-#                     continue
-#             else:
-#                 raise Exception(f'unsupported dataset type {dataset_types[i]}')
-#
-#             exec_result = run_extra_tests(problem, problem.buggy_code, [testcase])
-#             if dataset_types[i] == DatasetType.HUMAN_EVAL.value or dataset_types[i] == DatasetType.CODE_FORCES.value:
-#                 if exec_result['pass_rate'] == 1:
-#                     kill_bug.append(0)
-#                 else:
-#                     kill_bug.append(1)
-#             elif dataset_types[i] == DatasetType.MBPP.value:
-#                 if exec_result['passed']:
-#                     kill_bug.append(0)
-#                 else:
-#                     kill_bug.append(1)
-#         logger.info("pass_ground_truth is %s", pass_ground_truth)
-#         logger.info("kill_bug is %s", kill_bug)
-#         testcase_validity = [x * y for x, y in zip(pass_ground_truth, kill_bug)]
-#         reward = (sum(testcase_validity) / len(testcase_validity)) if len(testcase_validity) > 0 else 0
-#         rewards.append(reward)
-#     end_time = time.time()
-#     logger.info("testcase_pass_groundtruth_and_kill_bug_reward cost %s seconds",end_time-start_time)
-#     logger.info("testcase_pass_groundtruth_and_kill_bug_reward is %s", rewards)
-#     return rewards
 
 
 def fixed_code_pass_all_test_reward(completions, **kwargs):
@@ -415,6 +312,9 @@ def fixed_code_pass_all_test_reward(completions, **kwargs):
     end_time = time.time()
     logger.info("fixed_code_pass_all_test_reward cost %s seconds", end_time - start_time)
     logger.info("fixed_code_pass_all_test_reward is %s", rewards)
+    with open(logger_file, 'a') as f:
+        f.write(f'dataset = {dataset_types[0]}, fixed_code_pass_all_test_reward is {str(rewards)}\n')
+
     return rewards
 
 
@@ -422,7 +322,7 @@ def test_fixed_code(i, problem, fixed_code, dataset_type):
     logger.info("fixed_code is %s", fixed_code)
     exec_result = run_base_tests(problem, fixed_code)
 
-    if dataset_type == DatasetType.HUMAN_EVAL.value or dataset_type == DatasetType.CODE_FORCES.value:
+    if dataset_type in [DatasetType.HUMAN_EVAL.value, DatasetType.CODE_FORCES.value, DatasetType.CODE_CONTESTS.value]:
         if isinstance(exec_result, dict):
             reward = exec_result.get('pass_rate', 0)
         else:
@@ -463,13 +363,13 @@ def check_format(completion, dataset_type):
         return False
 
     format_correct = True
-    if dataset_type == DatasetType.CODE_FORCES.value:
+    if dataset_type in [DatasetType.CODE_FORCES.value, DatasetType.CODE_CONTESTS.value]:
         # code forces 是test_input,test_output格式
         for item in json_obj:
             if not is_valid_test_input_output(item):
                 format_correct = False
                 break
-    elif dataset_type == DatasetType.HUMAN_EVAL.value or dataset_type == DatasetType.MBPP.value:
+    elif dataset_type in [DatasetType.HUMAN_EVAL.value, DatasetType.MBPP.value]:
         # humaneval和mbpp 是assert格式
         for item in json_obj:
             if not isinstance(item, str) or not is_valid_assertion(item):
@@ -497,9 +397,18 @@ def format_reward(completions, **kwargs):
     return rewards
 
 
+def is_reasoning_model(model_name: str):
+    if 'qwen3' in model_name.lower() or 'smollm3' in model_name.lower():
+        return True
+    return False
+
+
+def think_reward(completions, **kwargs):
+    pass
+
+
 reward_funcs_registry = {
     "fixed_code_pass_all_test_reward": fixed_code_pass_all_test_reward,
-    # "testcase_syntax_reward": testcase_syntax_reward,
     "testcase_pass_groundtruth_and_kill_bug_reward": testcase_pass_groundtruth_and_kill_bug_reward,
     "format": format_reward,
 }
@@ -521,11 +430,11 @@ def add (x, y):
 Assertions that can expose the bug:
 ```json
 [
-    'assert add (1, 2) == 3',
-    'assert add (-1, 1) == 0',
-    'assert add (-1, 2) == 1',
-    'assert add (10000, 1) == 10001',
-    'assert add (-1, -2) == -3'
+    \"assert add (1, 2) == 3\",
+    \"assert add (-1, 1) == 0\",
+    \"assert add (-1, 2) == 1\",
+    \"assert add (10000, 1) == 10001\",
+    \"assert add (-1, -2) == -3\"
 ]
 ```
 
@@ -575,16 +484,16 @@ Testcases that can expose the bug:
 ```json
 [
     {{
-        'test_input':'1\n2',
-        'test_output':'3'
+        \"test_input\":\"1\n2\",
+        \"test_output\":\"3\"
     }},
     {{
-        'test_input':'-1\n1',
-        'test_output':'0'
+        \"test_input\":\"-1\n1\",
+        \"test_output\":\"0\"
     }},
     {{
-        'test_input':'-1\n2',
-        'test_output':'1'
+        \"test_input\":\"-1\n2\",
+        \"test_output\":\"1\"
     }}
 ]
 ```
@@ -610,14 +519,33 @@ The faulty function is:
 
 
 def main(script_args, training_args, model_args):
-    def make_conversation(example):
+    def make_conversation(example, think_mode=None):
         problem = CodeRepairProblem.from_json(example)
-        prompt_template = PROGRAM_REPAIR_TEMPLATE if problem.dataset == DatasetType.CODE_FORCES.value else FUNCTION_REPAIR_TEMPLATE
+        prompt_template = PROGRAM_REPAIR_TEMPLATE if problem.dataset in [DatasetType.CODE_FORCES.value,
+                                                                         DatasetType.CODE_CONTESTS.value] else FUNCTION_REPAIR_TEMPLATE
+        if think_mode is None:
+            # 非推理模型
+            messages = [
+                {"role": "user", "content": prompt_template.format(faulty_function=problem.buggy_code)},
+            ]
+            logger.info('not a reasoning model')
+        elif think_mode:
+            # 推理模型开启CoT
+            messages = [
+                # {"role": "system", "content": "/think"},
+                {"role": "user", "content": prompt_template.format(faulty_function=problem.buggy_code)+" /think"},
+            ]
+            logger.info('enable think mode')
+        else:
+            # 推理模型关闭CoT
+            messages = [
+                # {"role": "system", "content": "/no_think"},
+                {"role": "user", "content": prompt_template.format(faulty_function=problem.buggy_code)+" /no_think"},
+            ]
+            logger.info('disable think mode')
         return {
             **example,
-            "prompt": [
-                {"role": "user", "content": prompt_template.format(faulty_function=problem.buggy_code)},
-            ],
+            "prompt": messages,
         }
 
     # Set seed for reproducibility
@@ -659,6 +587,10 @@ def main(script_args, training_args, model_args):
     ################
     tokenizer = get_tokenizer(model_args)
 
+    is_reasoning = is_reasoning_model(model_args.model_name_or_path)
+    enable_think_mode = (script_args.reasoning_model_enable_cot if is_reasoning else None)
+    logger.info(f"enable_think_mode={enable_think_mode}")
+
     # Load the dataset
     if 'jsonl' in script_args.train_dataset:
         train_dataset = load_dataset('json', data_files=script_args.train_dataset)
@@ -667,7 +599,9 @@ def main(script_args, training_args, model_args):
     # 打乱训练集
     train_dataset = train_dataset.shuffle()
 
-    if training_args.eval_strategy == "no":
+    fn_kwargs = {"think_mode": enable_think_mode}
+
+    if not training_args.do_eval:
         eval_dataset = None
     else:
         # Load the eval dataset
@@ -675,12 +609,12 @@ def main(script_args, training_args, model_args):
             eval_dataset = load_dataset('json', data_files=script_args.eval_dataset)
         else:
             eval_dataset = load_dataset(script_args.eval_dataset)
-        eval_dataset = eval_dataset.map(make_conversation)
+        eval_dataset = eval_dataset.map(make_conversation, fn_kwargs=fn_kwargs)
 
     # Get reward functions
     reward_funcs = [reward_funcs_registry[func] for func in script_args.reward_funcs]
 
-    train_dataset = train_dataset.map(make_conversation)
+    train_dataset = train_dataset.map(make_conversation, fn_kwargs=fn_kwargs)
     logger.info("*** Initializing model ***")
     model = get_model(model_args, training_args)
 
@@ -705,33 +639,35 @@ def main(script_args, training_args, model_args):
         checkpoint = training_args.resume_from_checkpoint
     elif last_checkpoint is not None:
         checkpoint = last_checkpoint
-    train_result = trainer.train(resume_from_checkpoint=checkpoint)
-    metrics = train_result.metrics
-    metrics["train_samples"] = len(train_dataset[script_args.dataset_train_split])
-    trainer.log_metrics("train", metrics)
-    trainer.save_metrics("train", metrics)
-    trainer.save_state()
 
-    ##################################
-    # Save model and create model card
-    ##################################
-    logger.info("*** Save model ***")
-    trainer.model.generation_config.eos_token_id = tokenizer.eos_token_id
-    trainer.save_model(training_args.output_dir)
-    logger.info(f"Model saved to {training_args.output_dir}")
+    if not script_args.evaluate_only:
+        train_result = trainer.train(resume_from_checkpoint=checkpoint)
+        metrics = train_result.metrics
+        metrics["train_samples"] = len(train_dataset[script_args.dataset_train_split])
+        trainer.log_metrics("train", metrics)
+        trainer.save_metrics("train", metrics)
+        trainer.save_state()
 
-    # Save everything else on main process
-    kwargs = {
-        "finetuned_from": model_args.model_name_or_path,
-        "dataset": list(script_args.train_dataset),
-        "dataset_tags": list(script_args.train_dataset),
-        "tags": ["apr-rl"],
-    }
-    if trainer.accelerator.is_main_process:
-        trainer.create_model_card(**kwargs)
-        # Restore k,v cache for fast inference
-        # trainer.model.config.use_cache = True
-        trainer.model.config.save_pretrained(training_args.output_dir)
+        ##################################
+        # Save model and create model card
+        ##################################
+        logger.info("*** Save model ***")
+        trainer.model.generation_config.eos_token_id = tokenizer.eos_token_id
+        trainer.save_model(training_args.output_dir)
+        logger.info(f"Model saved to {training_args.output_dir}")
+
+        # Save everything else on main process
+        kwargs = {
+            "finetuned_from": model_args.model_name_or_path,
+            "dataset": list(script_args.train_dataset),
+            "dataset_tags": list(script_args.train_dataset),
+            "tags": ["apr-rl"],
+        }
+        if trainer.accelerator.is_main_process:
+            trainer.create_model_card(**kwargs)
+            # Restore k,v cache for fast inference
+            # trainer.model.config.use_cache = True
+            trainer.model.config.save_pretrained(training_args.output_dir)
 
     ##########
     # Evaluate
@@ -739,7 +675,6 @@ def main(script_args, training_args, model_args):
     if training_args.do_eval:
         logger.info("*** Evaluate ***")
         metrics = trainer.evaluate()
-        metrics["eval_samples"] = len(eval_dataset[script_args.dataset_test_split])
         trainer.log_metrics("eval", metrics)
         trainer.save_metrics("eval", metrics)
 

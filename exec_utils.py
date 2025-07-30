@@ -2,6 +2,7 @@ import logging
 import random
 import subprocess
 import time
+import uuid
 from typing import Optional, Callable, Dict
 import contextlib
 import io
@@ -16,8 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 def get_unique_id():
-    unique_id = f"{int(time.time() * 1000)}_{random.randint(10000000, 99999999)}"
-    return unique_id
+    return str(uuid.uuid4().hex)  # 生成 32 位十六进制字符串
 
 
 def unsafe_execute(problem: CodeRepairProblem, completion, result, timeout, extra_assertion=None):
@@ -171,6 +171,14 @@ def check_correctness(problem: CodeRepairProblem, completion: str, timeout: floa
     # p.join(timeout=timeout + 1)
     # if p.is_alive():
     #     p.kill()
+    if extra_assertion is not None and not isinstance(extra_assertion, str):
+        return dict(
+            task_id=problem.id,
+            test=problem.test_code if extra_assertion is None else extra_assertion,
+            passed=False,
+            result='',
+            completion_id=completion_id,
+        )
     result = []
     unsafe_execute(problem, completion, result, timeout, extra_assertion)
 
@@ -183,6 +191,7 @@ def check_correctness(problem: CodeRepairProblem, completion: str, timeout: floa
             logger.info('evaluate generated test on gt: %s', result[0])
         else:
             logger.info('evaluate generated test on bug: %s', result[0])
+
 
     return dict(
         task_id=problem.id,

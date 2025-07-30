@@ -1,9 +1,12 @@
+import os
+
 import jsonlines
 import outlines
 from vllm import LLM, SamplingParams
 
 from execution import *
 
+os.environ['CUDA_VISIBLE_DEVICES']='1'
 
 @outlines.prompt
 def zero_shot_prompt(instruction, question):
@@ -63,50 +66,12 @@ def extract_python_code(response):
     return text.split("```")[0]
 
 
-def repair_humaneval():
-    exec_cache = dict()
-    with jsonlines.open('./data/humaneval_buggy_clean.jsonl', 'r') as f:
-        for line in f:
-            problem = CodeRepairProblem.from_json(line)
-            repair_prompt = zero_shot_prompt(instruction=repair_instruction, question=problem.buggy_code)
-            response = generate_by_llm(prompt=repair_prompt)
-            fixed_function = extract_python_code(response)
-            if fixed_function in exec_cache.keys():
-                exec_result = exec_cache.get(fixed_function)
-            else:
-                exec_result = run_base_tests(problem, fixed_function)
-                exec_cache[fixed_function] = exec_result
-            line['fixed_code'] = fixed_function
-            line['pass_rate'] = exec_result['pass_rate']
-            with jsonlines.open('./data/humaneval_fix.jsonl', 'a') as f:
-                f.write(line)
-
-
-def repair_mbpp():
-    exec_cache = dict()
-    with jsonlines.open('./data/mbpp_buggy_clean.jsonl', 'r') as f:
-        for line in f:
-            problem = CodeRepairProblem.from_json(line)
-            repair_prompt = zero_shot_prompt(instruction=repair_instruction, question=problem.buggy_code)
-            response = generate_by_llm(prompt=repair_prompt)
-            fixed_function = extract_python_code(response)
-            if fixed_function in exec_cache.keys():
-                exec_result = exec_cache.get(fixed_function)
-            else:
-                exec_result = run_base_tests(problem, fixed_function)
-                exec_cache[fixed_function] = exec_result
-            line['fixed_code'] = fixed_function
-            line['passed'] = exec_result['passed']
-            with jsonlines.open('./data/mbpp_fix.jsonl', 'a') as f:
-                f.write(line)
-
-
-def repair_both(repair_model_path='',repair_model_name=''):
+def repair(repair_model_path='',input_file='',output_file=''):
     exec_cache = dict()
     total, passed = 0, 0
     if not os.path.exists('./data/result'):
         os.mkdir('./data/result')
-    with jsonlines.open('./data/apr_test_fold_1.jsonl', 'r') as f:
+    with jsonlines.open(input_file, 'r') as f:
         for line in f:
             total += 1
             problem = CodeRepairProblem.from_json(line)
@@ -119,10 +84,16 @@ def repair_both(repair_model_path='',repair_model_name=''):
                 exec_result = run_base_tests(problem, fixed_function)
                 exec_cache[fixed_function] = exec_result
             line['fixed_code'] = fixed_function
-            if DatasetType.HUMAN_EVAL.value == problem.dataset:
-                line['passed'] = (exec_result['pass_rate'] == 1)
+            if problem.dataset in [DatasetType.HUMAN_EVAL.value, DatasetType.CODE_FORCES.value,DatasetType.CODE_CONTESTS.value]:
+                if not isinstance(exec_result, dict) or 'pass_rate' not in exec_result.keys():
+                    line['passed'] = False
+                else:
+                    line['passed'] = (exec_result['pass_rate'] == 1)
             elif DatasetType.MBPP.value == problem.dataset:
-                line['passed'] = exec_result['passed']
+                if not isinstance(exec_result, dict) or 'passed' not in exec_result.keys():
+                    line['passed'] = False
+                else:
+                    line['passed'] = exec_result['passed']
             else:
                 raise Exception('unsupported dataset')
             if line['passed']:
@@ -130,10 +101,13 @@ def repair_both(repair_model_path='',repair_model_name=''):
                 print('passed')
             else:
                 print('failed')
-            with jsonlines.open(f'./data/result/apr_test_fold_1_{repair_model_name}.jsonl', 'a') as ff:
+            with jsonlines.open(output_file, 'a') as ff:
                 ff.write(line)
     print(f'pass@1 = {passed / total}')
 
 
 if __name__ == '__main__':
-    repair_both(repair_model_name='qwen2.5_coder_1.5b_instruct',repair_model_path='/root/autodl-tmp/apr-rl/Qwen2.5-Coder-1.5B-Instruct')
+    repair(repair_model_path='/root/autodl-tmp/apr-rl/Qwen2.5-1.5B-Instruct-APR-SFT/checkpoint-3809',
+                input_file='./data/apr_test_fold_1.jsonl',
+                output_file='./data/result/apr_test_fold_1_qwen2.5_coder_1.5b_instruct_sft_code.jsonl')
+

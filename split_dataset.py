@@ -82,37 +82,43 @@ def merge_dataset(merge_list: list, output_file: str):
             print(f"Reading from {file_path}...")
             with jsonlines.open(file_path) as reader:
                 for obj in reader:
+                    if 'difficulty' not in obj.keys():
+                        obj['difficulty']=''
+                    else:
+                        obj['difficulty'] = str(obj['difficulty'])
                     writer.write(obj)
 
     print(f"✅ Merged dataset saved to: {output_file}")
 
 
 if __name__ == '__main__':
-    split_dataset(
-        split_list=[
-            './data/apr/codeforces_buggy_clean.jsonl',
-            './data/apr/humaneval_buggy_clean.jsonl',
-            './data/apr/mbpp_buggy_clean.jsonl'
-        ],
-        output_dir='./data/apr'
-    )
-
-    for k in range(1,6):
+    # split_dataset(
+    #     split_list=[
+    #         # './data/apr/codeforces_buggy_clean.jsonl',
+    #         # './data/apr/humaneval_buggy_clean.jsonl',
+    #         './data/apr/codecontests_buggy_clean.jsonl'
+    #     ],
+    #     output_dir='./data/apr'
+    # )
+    #
+    for k in range(1,2):
         merge_dataset(
             merge_list=[
-                # f'./data/apr/codeforces_buggy_clean_train_fold_{k}.jsonl',
+                f'./data/apr/codeforces_buggy_clean_train_fold_{k}.jsonl',
                 f'./data/apr/humaneval_buggy_clean_train_fold_{k}.jsonl',
                 f'./data/apr/mbpp_buggy_clean_train_fold_{k}.jsonl',
+                f'./data/apr/codecontests_buggy_clean_train_fold_{k}.jsonl',
             ],
-            output_file=f'./data/apr/apr_train_fold_{k}.jsonl',
+            output_file=f'./data/apr/apr_train_all_fold_{k}.jsonl',
         )
         merge_dataset(
             merge_list=[
-                # f'./data/apr/codeforces_buggy_clean_test_fold_{k}.jsonl',
+                f'./data/apr/codeforces_buggy_clean_test_fold_{k}.jsonl',
                 f'./data/apr/humaneval_buggy_clean_test_fold_{k}.jsonl',
                 f'./data/apr/mbpp_buggy_clean_test_fold_{k}.jsonl',
+                f'./data/apr/codecontests_buggy_clean_test_fold_{k}.jsonl',
             ],
-            output_file=f'./data/apr/apr_test_fold_{k}.jsonl',
+            output_file=f'./data/apr/apr_test_all_fold_{k}.jsonl',
         )
 
 

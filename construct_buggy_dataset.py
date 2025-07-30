@@ -11,8 +11,8 @@ from tqdm import tqdm
 from execution import run_base_tests
 from model import DatasetType, CodeRepairProblem
 
-base_url = "https://api5.xhub.chat/v1"
-api_key = "sk-KxyaIwYE6GyqdubcSNbcmDa4s4poc1okauEFzJNL4RiGaca8"
+base_url = ""
+api_key = ""
 
 
 def make_model():
@@ -138,6 +138,8 @@ Input:
 
 """
 
+language_transform_prompt = "Help me to transform the following code into Python3 version.\n\n{code}"
+
 
 def construct_humaneval_buggy_dataset():
     # 打开 parquet 文件
@@ -201,6 +203,48 @@ def construct_code_forces_buggy_dataset():
             f.write(row_dict)
 
 
+def construct_code_contests_buggy_dataset(start_idx=7358):
+    code_contests = load_dataset("./data/code_contests")['train']
+    i = 0
+    for row in tqdm(code_contests, total=len(code_contests), desc="Processing CodeContests"):
+        i += 1
+        if i <= start_idx:
+            continue
+        # filter codeforces
+        if int(row['source']) == 2:
+            continue
+        # only std io is supported
+        if row['input_file'] != '' or row['output_file'] != '':
+            continue
+        print(row['private_tests'])
+        if len(row['private_tests']['input']) == 0:
+            continue
+        languages = row['solutions']['language']
+        solutions = row['solutions']['solution']
+        if languages.count(1) == 0:
+            continue
+        first_python2_solution_idx = languages.index(1)
+        first_python2_solution = solutions[first_python2_solution_idx]
+
+        transform_prompt = language_transform_prompt.format(code=first_python2_solution)
+        response = generate(transform_prompt, num_samples=1)[0]
+        if response is None:
+            continue
+        python3_solution = extract_python_code(response)
+
+        row_dict = row
+        row_dict['solution'] = python3_solution
+        del row_dict['solutions']
+        del row_dict['incorrect_solutions']
+        python_func = "\"\"\"" + row['description'] + "\"\"\"\n\n" + row['solution']
+        buggy_funcs = generate(prompt.format(correct_function=python_func), num_samples=10)
+        buggy_funcs = [extract_python_code(x) for x in buggy_funcs]
+        row_dict['buggy'] = buggy_funcs
+        # 使用追加模式 ('a') 写入 JSONL 文件
+        with jsonlines.open('./data/codecontests_buggy.jsonl', 'a') as f:
+            f.write(row_dict)
+
+
 def remove_inline_comments(code: str) -> str:
     return re.sub(r'#.*$', '', code, flags=re.MULTILINE)
 
@@ -222,7 +266,7 @@ def filter_humaneval_buggy_dataset():
                     test_inputs=[],
                     test_outputs=[],
                     entry_point=item['entry_point'],
-                    ground_truth=item['prompt']+'\n'+item['canonical_solution'],
+                    ground_truth=item['prompt'] + '\n' + item['canonical_solution'],
                     buggy_code=buggy_program
                 )
                 result = run_base_tests(problem, problem.buggy_code)
@@ -291,9 +335,44 @@ def filter_code_forces_buggy_dataset():
                     f.write(dataclasses.asdict(problem))
 
 
+def filter_code_contests_buggy_dataset():
+    buggy_programs = set()
+    with jsonlines.open('./data/codecontests_buggy.jsonl', 'r') as f:
+        for item in f:
+            for buggy_program in item['buggy']:
+                buggy_program = remove_inline_comments(buggy_program)
+                if buggy_program in buggy_programs:
+                    continue
+                buggy_programs.add(buggy_program)
+
+                problem = CodeRepairProblem(
+                    dataset=DatasetType.CODE_CONTESTS.value,
+                    id=f"CodeContests/{item['name']}",
+                    question=item['description'],
+                    test_code='',
+                    test_inputs=item['private_tests']['input'],
+                    test_outputs=item['private_tests']['output'],
+                    entry_point='',
+                    ground_truth=item['solution'],
+                    buggy_code=buggy_program,
+                    difficulty=item['difficulty']
+                )
+                result = run_base_tests(problem, problem.buggy_code)
+                gt_result = run_base_tests(problem, problem.ground_truth)
+                if int(result['pass_rate']) == 1:
+                    continue
+                if int(gt_result['pass_rate']) != 1:
+                    continue
+
+                with jsonlines.open('./data/codecontests_buggy_clean.jsonl', 'a') as f:
+                    f.write(dataclasses.asdict(problem))
+
+
 if __name__ == '__main__':
     # construct_humaneval_buggy_dataset()
     # construct_mbpp_buggy_dataset()
     # construct_code_forces_buggy_dataset()
-    filter_humaneval_buggy_dataset()
-    filter_mbpp_buggy_dataset()
+    # filter_humaneval_buggy_dataset()
+    # filter_mbpp_buggy_dataset()
+    construct_code_contests_buggy_dataset()
+    filter_code_contests_buggy_dataset()

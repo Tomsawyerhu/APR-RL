@@ -2,11 +2,14 @@
 model_name_or_path: /root/autodl-tmp/apr-rl/Qwen2.5-Coder-1.5B-Instruct
 model_revision: main
 torch_dtype: bfloat16
-attn_implementation: flash_attention_2
-#attn_implementation: sdpa
+attn_implementation: sdpa
+#attn_implementation: flash_attention_2
 # Data training arguments
-train_dataset: /root/autodl-tmp/apr-rl/data/apr_train_fold_1.jsonl
-eval_dataset: /root/autodl-tmp/apr-rl/data/apr_test_fold_1.jsonl
+train_dataset: /root/autodl-tmp/apr-rl/data/codecontests_buggy_clean_train_fold_1.jsonl
+eval_dataset: /root/autodl-tmp/apr-rl/data/codecontests_buggy_clean_test_fold_1.jsonl
+resume_from_checkpoint: true
+evaluate_only: true
+reward_funcs: ["format", "fixed_code_pass_all_test_reward","testcase_pass_groundtruth_and_kill_bug_reward"]
 #dataset_configs:
 #- all
 # Num processes is less by 1 as vLLM is using 1 GPU
@@ -25,7 +28,7 @@ gradient_accumulation_steps: 8
 gradient_checkpointing: true
 gradient_checkpointing_kwargs:
   use_reentrant: false
-hub_model_id: Qwen2.5-1.5B-Instruct-APR-RL
+hub_model_id: Qwen2.5-1.5B-Instruct-APR-RL-CODE-CONTESTS
 hub_strategy: every_save
 learning_rate: 2.0e-05
 log_level: info
@@ -37,7 +40,7 @@ max_prompt_length: 4096
 max_completion_length: 2048
 max_steps: -1
 num_train_epochs: 1
-output_dir: /root/autodl-tmp/apr-rl/Qwen2.5-1.5B-Instruct-APR-RL
+output_dir: /root/autodl-tmp/apr-rl/Qwen2.5-1.5B-Instruct-APR-RL-CODE-CONTESTS
 overwrite_output_dir: true
 per_device_eval_batch_size: 8
 per_device_train_batch_size: 1
@@ -45,8 +48,8 @@ push_to_hub: False
 report_to:
 - tensorboard
 save_strategy: 'steps'
-save_steps: 250
-save_total_limit: 4
+save_steps: 500
+save_total_limit: 1
 seed: 42
 temperature: 1.0
 warmup_ratio: 0.1
