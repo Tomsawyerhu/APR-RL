@@ -16,3 +16,13 @@ GRPO for Automated Program Repair
 ```shell
 ACCELERATE_LOG_LEVEL=info CUDA_VISIBLE_DEVICES=0,1 accelerate launch  sft.py --config sft_config.yaml
 ```
+
+## Citation
+```
+@article{hu2025repair,
+  title={Repair-r1: Better test before repair},
+  author={Hu, Haichuan and Xie, Xiaochen and Zhang, Quanjun},
+  journal={arXiv preprint arXiv:2507.22853},
+  year={2025}
+}
+```
